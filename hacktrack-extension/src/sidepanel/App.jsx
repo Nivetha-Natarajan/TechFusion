@@ -2,79 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import LoginButton from './components/LoginButton';
 import FollowInput from './components/FollowInput';
 import CardList from './components/CardList';
-import { DEFAULT_NOTE_COLOR } from './components/StickyNoteCard';
-
-/**
- * Initial sample/mock topics to ensure the UI is fully visible and testable
- * before the background service worker is linked.
- */
-const SAMPLE_TOPICS = [
-  {
-    id: 'topic-1',
-    name: 'HackOn With Amazon',
-    priority: 'urgent',
-    isPinned: false,
-    color: null, // null = use priority default color
-    lastUpdated: '10 mins ago',
-    deadlines: [
-      'Round 1 Submission: Oct 12, 11:59 PM',
-      'Team Registration: Oct 05, 6:00 PM',
-    ],
-    updates: [
-      'API keys & problem statements released in Slack portal',
-    ],
-    tasks: [
-      'Submit GitHub repository link',
-      'Record 2-min prototype demo video',
-    ],
-    reminders: [
-      'Join orientation webinar on Oct 2nd at 5 PM IST',
-    ],
-  },
-  {
-    id: 'topic-2',
-    name: 'Google Summer of Code 2026',
-    priority: 'normal',
-    isPinned: true,
-    color: null,
-    lastUpdated: '1 hour ago',
-    deadlines: [
-      'Contributor proposal deadline: April 2, 18:00 UTC',
-    ],
-    updates: [
-      'Mentoring organizations announced publicly',
-    ],
-    tasks: [
-      'Draft proposal document on Google Docs',
-      'Introduce self on organization Discord channel',
-    ],
-    reminders: [], // Will render "None found"
-  },
-  {
-    id: 'topic-3',
-    name: 'Uber Star Internships',
-    priority: 'normal',
-    isPinned: false,
-    color: '#E1F5FE', // Light Blue override
-    lastUpdated: 'Yesterday',
-    deadlines: [], // Will render "None found"
-    updates: [
-      'Application under review by university recruiter',
-    ],
-    tasks: [
-      'Complete 70-minute HackerRank assessment by Sunday',
-    ],
-    reminders: [
-      'Review Graph theory and dynamic programming patterns',
-    ],
-  },
-];
-
-/**
- * Storage & Chrome API Helpers (Safely handles both Chrome Extension & standalone dev)
- */
-const isChromeAvailable = () =>
-  typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+import {
+  getFollowedTopics as getStoredTopics,
+  setFollowedTopics as setStoredTopics,
+  getAuthStatus as getStoredAuthStatus,
+  setAuthStatus as setStoredAuthStatus,
+  removeFollowedTopic as removeStoredTopic,
+} from '../shared/storage';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -85,211 +19,185 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState(null);
 
   /**
-   * 1. Data Flow: getFollowedTopics()
-   * Loads followed topics from chrome.storage.local, or seeds mock data
+   * 1. Data Flow: Initial Auth Verification & Loading Stored Topics
+   * Strict check against background.js / chrome.identity.
+   * If not authenticated, stays on the Login screen.
    */
-  const getFollowedTopics = useCallback(async () => {
+  const checkAuthAndLoadTopics = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage(null);
 
-    try {
-      if (isChromeAvailable()) {
-        chrome.storage.local.get(['followedTopics', 'isAuthenticated'], (result) => {
-          if (chrome.runtime.lastError) {
-            console.warn('Error reading chrome.storage:', chrome.runtime.lastError);
-            setTopics(SAMPLE_TOPICS);
-            setIsAuthenticated(false);
-          } else {
-            if (result.followedTopics && Array.isArray(result.followedTopics)) {
-              setTopics(result.followedTopics);
-            } else {
-              // Seed with sample data on first run
-              setTopics(SAMPLE_TOPICS);
-              chrome.storage.local.set({ followedTopics: SAMPLE_TOPICS });
-            }
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({ action: 'GET_LOGIN_STATUS' }, async (response) => {
+        const isAuth = !!(response && response.isAuthenticated);
+        setIsAuthenticated(isAuth);
 
-            if (typeof result.isAuthenticated === 'boolean') {
-              setIsAuthenticated(result.isAuthenticated);
-            }
-          }
-          setIsLoading(false);
-        });
-      } else {
-        // Fallback for standalone/local browser preview
-        const localSaved = localStorage.getItem('hacktrack_topics');
-        const localAuth = localStorage.getItem('hacktrack_auth');
-
-        if (localSaved) {
+        if (isAuth) {
           try {
-            setTopics(JSON.parse(localSaved));
+            const storedTopics = await getStoredTopics();
+            setTopics(Array.isArray(storedTopics) ? storedTopics : []);
           } catch {
-            setTopics(SAMPLE_TOPICS);
+            setTopics([]);
           }
         } else {
-          setTopics(SAMPLE_TOPICS);
-          localStorage.setItem('hacktrack_topics', JSON.stringify(SAMPLE_TOPICS));
+          setTopics([]);
         }
-
-        setIsAuthenticated(localAuth === 'true'); // defaults to false if not set
         setIsLoading(false);
-      }
-    } catch (err) {
-      console.error('Failed to get followed topics:', err);
-      setErrorMessage('Failed to load tracked topics.');
-      setTopics(SAMPLE_TOPICS);
+      });
+    } else {
+      // Outside Chrome Extension context
+      setIsAuthenticated(false);
+      setTopics([]);
       setIsLoading(false);
     }
   }, []);
 
   /**
-   * Save topics helper to keep chrome.storage and state synchronized
+   * Save topics helper to keep chrome.storage.local and state synchronized
    */
-  const saveTopics = (newTopics) => {
+  const saveTopics = async (newTopics) => {
     setTopics(newTopics);
-    if (isChromeAvailable()) {
-      chrome.storage.local.set({ followedTopics: newTopics });
-    } else {
-      localStorage.setItem('hacktrack_topics', JSON.stringify(newTopics));
-    }
+    await setStoredTopics(newTopics);
   };
 
   /**
-   * 2. Data Flow: followTopic(topicName)
-   * Sends message to background.js to start tracking a new topic
+   * 2. Data Flow: followTopic(rawTopicName)
+   * Only creates and displays 1 sticky-note card per topic IF matching Gmail emails exist.
    */
-  const followTopic = async (topicName) => {
-    if (!topicName || !topicName.trim()) return;
+  const followTopic = async (rawTopicName) => {
+    let topicName = (rawTopicName || '').trim();
+    // Strip user prefixes like "follow " or "follow: "
+    topicName = topicName.replace(/^follow[:\s]+/i, '').trim();
 
-    // Check for duplicate
-    const exists = topics.some(
-      (t) => t.name.toLowerCase() === topicName.trim().toLowerCase()
-    );
-    if (exists) {
-      setErrorMessage(`You are already following "${topicName.trim()}".`);
-      return;
-    }
+    if (!topicName) return;
 
     setIsAddingTopic(true);
     setErrorMessage(null);
 
-    // Call background.js via chrome.runtime.sendMessage
+    // Call background service worker to search real Gmail & extract with Gemini
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage(
-        { action: 'FOLLOW_TOPIC', topicName: topicName.trim() },
+        { action: 'FOLLOW_TOPIC', topicName },
         (response) => {
+          setIsAddingTopic(false);
           if (chrome.runtime.lastError) {
-            console.warn(
-              'background.js message failed or not running yet, using client fallback:',
-              chrome.runtime.lastError.message
-            );
+            setErrorMessage(chrome.runtime.lastError.message);
+            return;
           }
-          if (response && response.error) {
-            setErrorMessage(response.error);
+
+          if (response && response.success) {
+            if (response.topics && Array.isArray(response.topics)) {
+              setTopics(response.topics);
+            } else if (response.topic) {
+              setTopics((prev) => {
+                const filtered = prev.filter(
+                  (t) => (t.name || '').toLowerCase() !== topicName.toLowerCase()
+                );
+                return [response.topic, ...filtered];
+              });
+            }
+          } else {
+            // No matching emails found or error -> Show clear message
+            setErrorMessage(
+              response?.error || 'No upcoming relevant emails found'
+            );
           }
         }
       );
+    } else {
+      setIsAddingTopic(false);
+      setErrorMessage('Chrome Extension runtime is not available.');
     }
-
-    // Client-side optimistic update with sample card structure
-    const newTopic = {
-      id: `topic-${Date.now()}`,
-      name: topicName.trim(),
-      priority: 'normal',
-      isPinned: false,
-      color: null,
-      lastUpdated: 'Just now',
-      deadlines: ['Scanning incoming emails...'],
-      updates: ['AI topic extraction initiated'],
-      tasks: [],
-      reminders: [],
-    };
-
-    const updated = [newTopic, ...topics];
-    saveTopics(updated);
-    setIsAddingTopic(false);
   };
+
 
   /**
    * 3. Data Flow: unfollowTopic(topicId)
-   * Sends message to background.js and removes topic locally
+   * Sends message to background.js and removes topic from chrome.storage.local
    */
-  const unfollowTopic = (topicId) => {
+  const unfollowTopic = async (topicId) => {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage(
         { action: 'UNFOLLOW_TOPIC', topicId },
         (response) => {
           if (chrome.runtime.lastError) {
-            console.warn('background.js unfollow notice:', chrome.runtime.lastError.message);
+            console.warn('[HackTrack] background.js unfollow notice:', chrome.runtime.lastError.message);
           }
         }
       );
     }
 
     const updated = topics.filter((t) => t.id !== topicId);
-    saveTopics(updated);
+    setTopics(updated);
+    await removeStoredTopic(topicId);
   };
 
   /**
    * 4. Feature: Color Dot Change per Topic
-   * Updates note color and persists in storage
+   * Updates note color and persists in chrome.storage.local
    */
-  const handleColorChange = (topicId, newColor) => {
+  const handleColorChange = async (topicId, newColor) => {
     const updated = topics.map((t) =>
       t.id === topicId ? { ...t, color: newColor } : t
     );
-    saveTopics(updated);
+    await saveTopics(updated);
   };
 
   /**
-   * 5. Auth Handlers
+   * 5. Real Google OAuth Login Handler
+   * Strictly gated: Only grants access to dashboard if Google OAuth succeeds.
    */
   const handleLogin = () => {
     setIsLoggingIn(true);
     setErrorMessage(null);
 
-    // Call background.js to trigger chrome.identity
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ action: 'LOGIN' }, (response) => {
+      chrome.runtime.sendMessage({ action: 'LOGIN' }, async (response) => {
+        setIsLoggingIn(false);
         if (chrome.runtime.lastError) {
-          console.warn('background.js login notice:', chrome.runtime.lastError.message);
+          console.warn('[HackTrack] background.js login error:', chrome.runtime.lastError.message);
+          setIsAuthenticated(false);
+          setErrorMessage(chrome.runtime.lastError.message);
+          return;
         }
-        if (response && response.error) {
-          setErrorMessage(response.error);
+
+        if (response && response.success && response.token) {
+          setIsAuthenticated(true);
+          const storedTopics = await getStoredTopics();
+          setTopics(Array.isArray(storedTopics) ? storedTopics : []);
+        } else {
+          // Authentication cancelled, denied, or failed -> Stay on Login screen
+          setIsAuthenticated(false);
+          setErrorMessage(
+            response?.error || 'Google login was cancelled or permission was denied.'
+          );
         }
       });
-    }
-
-    // Set authenticated state and persist
-    setTimeout(() => {
-      setIsAuthenticated(true);
+    } else {
       setIsLoggingIn(false);
-      if (isChromeAvailable()) {
-        chrome.storage.local.set({ isAuthenticated: true });
-      } else {
-        localStorage.setItem('hacktrack_auth', 'true');
-      }
-    }, 400);
+      setIsAuthenticated(false);
+      setErrorMessage('Chrome Extension runtime is not available.');
+    }
   };
 
-  const handleLogout = () => {
+  /**
+   * Logout Handler
+   */
+  const handleLogout = async () => {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({ action: 'LOGOUT' });
     }
 
     setIsAuthenticated(false);
-    if (isChromeAvailable()) {
-      chrome.storage.local.set({ isAuthenticated: false });
-    } else {
-      localStorage.setItem('hacktrack_auth', 'false');
-    }
+    await setStoredAuthStatus(false);
   };
 
   /**
    * 6. Listen for chrome.storage.onChanged
-   * Auto-updates UI when background.js refreshes email data (every 2 mins)
+   * Auto-updates UI when background.js updates email data via periodic sync
    */
   useEffect(() => {
-    getFollowedTopics();
+    checkAuthAndLoadTopics();
 
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
       const storageListener = (changes, areaName) => {
@@ -308,35 +216,35 @@ export default function App() {
         chrome.storage.onChanged.removeListener(storageListener);
       };
     }
-  }, [getFollowedTopics]);
+  }, [checkAuthAndLoadTopics]);
 
   /**
    * 7. Pin Toggle Handler
    */
-  const handleTogglePin = (topicId) => {
+  const handleTogglePin = async (topicId) => {
     const updated = topics.map((t) =>
       t.id === topicId ? { ...t, isPinned: !t.isPinned } : t
     );
-    saveTopics(updated);
+    await saveTopics(updated);
   };
 
   /**
-   * 8. Sorting Logic (Pinned > Urgent > Normal > lastUpdated)
+   * 8. Sorting Logic (Pinned > Emergency > Urgent > Normal)
    */
   const sortedTopics = [...topics].sort((a, b) => {
-    // 1. Pinned first
+    // 1. Pinned items always first
     if (a.isPinned && !b.isPinned) return -1;
     if (!a.isPinned && b.isPinned) return 1;
-    
-    // 2. Urgent next
-    const aIsUrgent = a.priority === 'urgent';
-    const bIsUrgent = b.priority === 'urgent';
-    if (aIsUrgent && !bIsUrgent) return -1;
-    if (!aIsUrgent && bIsUrgent) return 1;
-    
-    // 3. Keep original relative order (or sort by lastUpdated if it was an actual timestamp)
+
+    // 2. Priority weighting: Emergency (1) > Urgent (2) > Normal (3)
+    const priorityWeight = { emergency: 1, urgent: 2, normal: 3 };
+    const pA = priorityWeight[a.priority] || 3;
+    const pB = priorityWeight[b.priority] || 3;
+    if (pA !== pB) return pA - pB;
+
     return 0;
   });
+
 
   return (
     <div className="panel-container">
@@ -353,7 +261,7 @@ export default function App() {
             </svg>
           </div>
 
-          <h1 className="login-title">HackTrack AI</h1>
+          <h1 className="login-title">HackTrack</h1>
           <p className="login-subtitle">
             AI-powered sticky notes for deadlines, updates, and tasks extracted directly from your Gmail.
           </p>
@@ -373,6 +281,23 @@ export default function App() {
             </div>
           </div>
 
+          {/* Error Message if Login Fails / Cancelled */}
+          {errorMessage && (
+            <div className="error-banner" style={{ marginBottom: 16, width: '100%', maxWidth: 320 }} role="alert">
+              <div className="error-banner-content">
+                <span aria-hidden="true">⚠️</span>
+                <span>{errorMessage}</span>
+              </div>
+              <button
+                className="error-close-btn"
+                onClick={() => setErrorMessage(null)}
+                aria-label="Dismiss error"
+              >
+                &times;
+              </button>
+            </div>
+          )}
+
           <LoginButton onClick={handleLogin} isLoading={isLoggingIn} />
         </div>
       ) : (
@@ -381,7 +306,7 @@ export default function App() {
           <header className="dashboard-header">
             <div className="brand-section">
               <div className="brand-mini-icon" aria-hidden="true">📌</div>
-              <span className="brand-title">HackTrack AI</span>
+              <span className="brand-title">HackTrack</span>
             </div>
 
             <div className="auth-status-section">

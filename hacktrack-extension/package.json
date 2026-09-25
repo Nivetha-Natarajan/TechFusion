@@ -1,11 +1,11 @@
 {
-  "name": "hacktrack-extension",
+  "name": "hacktrack",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node generate_icons.js && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
