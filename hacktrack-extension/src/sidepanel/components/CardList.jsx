@@ -13,6 +13,7 @@ export default function CardList({
   onDismissError,
   onUnfollow,
   onColorChange,
+  onTogglePin,
 }) {
   return (
     <div className="card-list-scroll">
@@ -72,6 +73,7 @@ export default function CardList({
           topic={topic}
           onUnfollow={onUnfollow}
           onColorChange={onColorChange}
+          onTogglePin={onTogglePin}
         />
       ))}
     </div>

@@ -19,8 +19,9 @@ export const DEFAULT_NOTE_COLOR = '#FFF9C4';
  * Renders an individual tracked topic with deadlines, updates, tasks, reminders,
  * unfollow action, and a 5-color pastel dot picker.
  */
-export default function StickyNoteCard({ topic, onUnfollow, onColorChange }) {
-  const currentColor = topic.color || DEFAULT_NOTE_COLOR;
+export default function StickyNoteCard({ topic, onUnfollow, onColorChange, onTogglePin }) {
+  const defaultBg = topic.priority === 'urgent' ? '#FFEBEE' : '#E8F5E9';
+  const currentColor = topic.color || defaultBg;
 
   const renderSection = (icon, title, items) => {
     const hasItems = items && Array.isArray(items) && items.length > 0;
@@ -48,14 +49,22 @@ export default function StickyNoteCard({ topic, onUnfollow, onColorChange }) {
 
   return (
     <article
-      className="sticky-note-card"
+      className={`sticky-note-card ${topic.isPinned ? 'is-pinned' : ''}`}
       style={{ backgroundColor: currentColor }}
       data-topic-id={topic.id}
     >
       {/* Top Header */}
       <div className="card-header">
         <div className="card-title-group">
-          <h3 className="card-title">{topic.name}</h3>
+          <div className="card-title-row">
+            <h3 className="card-title">{topic.name}</h3>
+            {topic.priority === 'urgent' && (
+              <span className="badge badge-urgent">URGENT</span>
+            )}
+            {topic.priority === 'normal' && (
+              <span className="badge badge-normal">NORMAL</span>
+            )}
+          </div>
           {topic.lastUpdated && (
             <span className="card-meta">
               Updated {topic.lastUpdated}
@@ -63,20 +72,32 @@ export default function StickyNoteCard({ topic, onUnfollow, onColorChange }) {
           )}
         </div>
 
-        {/* Unfollow Button */}
-        <button
-          className="btn-unfollow"
-          onClick={() => onUnfollow(topic.id)}
-          title={`Unfollow ${topic.name}`}
-          aria-label={`Unfollow ${topic.name}`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            <line x1="10" y1="11" x2="10" y2="17"></line>
-            <line x1="14" y1="11" x2="14" y2="17"></line>
-          </svg>
-        </button>
+        <div className="card-actions">
+          {/* Pin Button */}
+          <button
+            className={`btn-pin ${topic.isPinned ? 'pinned' : ''}`}
+            onClick={() => onTogglePin(topic.id)}
+            title={topic.isPinned ? 'Unpin this topic' : 'Pin this topic'}
+            aria-label={topic.isPinned ? 'Unpin this topic' : 'Pin this topic'}
+          >
+            📌
+          </button>
+          
+          {/* Unfollow Button */}
+          <button
+            className="btn-unfollow"
+            onClick={() => onUnfollow(topic.id)}
+            title={`Unfollow ${topic.name}`}
+            aria-label={`Unfollow ${topic.name}`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              <line x1="10" y1="11" x2="10" y2="17"></line>
+              <line x1="14" y1="11" x2="14" y2="17"></line>
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* 4 Content Sections */}

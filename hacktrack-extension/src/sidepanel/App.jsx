@@ -12,7 +12,9 @@ const SAMPLE_TOPICS = [
   {
     id: 'topic-1',
     name: 'HackOn With Amazon',
-    color: '#FFF9C4', // Pale Yellow
+    priority: 'urgent',
+    isPinned: false,
+    color: null, // null = use priority default color
     lastUpdated: '10 mins ago',
     deadlines: [
       'Round 1 Submission: Oct 12, 11:59 PM',
@@ -32,7 +34,9 @@ const SAMPLE_TOPICS = [
   {
     id: 'topic-2',
     name: 'Google Summer of Code 2026',
-    color: '#E8F5E9', // Mint Green
+    priority: 'normal',
+    isPinned: true,
+    color: null,
     lastUpdated: '1 hour ago',
     deadlines: [
       'Contributor proposal deadline: April 2, 18:00 UTC',
@@ -49,7 +53,9 @@ const SAMPLE_TOPICS = [
   {
     id: 'topic-3',
     name: 'Uber Star Internships',
-    color: '#E1F5FE', // Light Blue
+    priority: 'normal',
+    isPinned: false,
+    color: '#E1F5FE', // Light Blue override
     lastUpdated: 'Yesterday',
     deadlines: [], // Will render "None found"
     updates: [
@@ -71,7 +77,7 @@ const isChromeAvailable = () =>
   typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [topics, setTopics] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddingTopic, setIsAddingTopic] = useState(false);
@@ -92,7 +98,7 @@ export default function App() {
           if (chrome.runtime.lastError) {
             console.warn('Error reading chrome.storage:', chrome.runtime.lastError);
             setTopics(SAMPLE_TOPICS);
-            setIsAuthenticated(true);
+            setIsAuthenticated(false);
           } else {
             if (result.followedTopics && Array.isArray(result.followedTopics)) {
               setTopics(result.followedTopics);
@@ -124,7 +130,7 @@ export default function App() {
           localStorage.setItem('hacktrack_topics', JSON.stringify(SAMPLE_TOPICS));
         }
 
-        setIsAuthenticated(localAuth !== null ? localAuth === 'true' : true);
+        setIsAuthenticated(localAuth === 'true'); // defaults to false if not set
         setIsLoading(false);
       }
     } catch (err) {
@@ -188,7 +194,9 @@ export default function App() {
     const newTopic = {
       id: `topic-${Date.now()}`,
       name: topicName.trim(),
-      color: DEFAULT_NOTE_COLOR,
+      priority: 'normal',
+      isPinned: false,
+      color: null,
       lastUpdated: 'Just now',
       deadlines: ['Scanning incoming emails...'],
       updates: ['AI topic extraction initiated'],
@@ -302,6 +310,34 @@ export default function App() {
     }
   }, [getFollowedTopics]);
 
+  /**
+   * 7. Pin Toggle Handler
+   */
+  const handleTogglePin = (topicId) => {
+    const updated = topics.map((t) =>
+      t.id === topicId ? { ...t, isPinned: !t.isPinned } : t
+    );
+    saveTopics(updated);
+  };
+
+  /**
+   * 8. Sorting Logic (Pinned > Urgent > Normal > lastUpdated)
+   */
+  const sortedTopics = [...topics].sort((a, b) => {
+    // 1. Pinned first
+    if (a.isPinned && !b.isPinned) return -1;
+    if (!a.isPinned && b.isPinned) return 1;
+    
+    // 2. Urgent next
+    const aIsUrgent = a.priority === 'urgent';
+    const bIsUrgent = b.priority === 'urgent';
+    if (aIsUrgent && !bIsUrgent) return -1;
+    if (!aIsUrgent && bIsUrgent) return 1;
+    
+    // 3. Keep original relative order (or sort by lastUpdated if it was an actual timestamp)
+    return 0;
+  });
+
   return (
     <div className="panel-container">
       {!isAuthenticated ? (
@@ -368,12 +404,13 @@ export default function App() {
 
           {/* Scrollable Sticky-Note Feed */}
           <CardList
-            topics={topics}
+            topics={sortedTopics}
             isLoading={isLoading}
             errorMessage={errorMessage}
             onDismissError={() => setErrorMessage(null)}
             onUnfollow={unfollowTopic}
             onColorChange={handleColorChange}
+            onTogglePin={handleTogglePin}
           />
         </>
       )}
